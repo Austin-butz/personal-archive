@@ -27,8 +27,8 @@ CREATE TABLE notes (
 
 CREATE TABLE calendar_events (
     id             INTEGER PRIMARY KEY,
-    source         TEXT NOT NULL,          -- 'ics'
-    external_id    TEXT,                   -- UID (+ RECURRENCE-ID if present)
+    source         TEXT NOT NULL,          -- 'macos_calendar'
+    external_id    TEXT,                   -- series UID + '/' + occurrence slot
     calendar_name  TEXT,
     summary        TEXT,
     description    TEXT,
@@ -64,13 +64,14 @@ CREATE TABLE reminders (
 
 CREATE TABLE health_metrics (
     id             INTEGER PRIMARY KEY,
-    source         TEXT NOT NULL,          -- 'google_health' | 'fitbit_takeout'
+    source         TEXT NOT NULL,          -- 'google_health'
     external_id    TEXT,
     metric         TEXT NOT NULL,          -- 'steps', 'resting_hr', 'sleep_minutes', ...
     value          REAL NOT NULL,
     unit           TEXT NOT NULL,
-    start_at       TEXT NOT NULL,
+    start_at       TEXT NOT NULL,          -- YYYY-MM-DD for daily metrics, else UTC ISO
     end_at         TEXT,
+    details        TEXT,                   -- JSON: sleep stages, workout stats, ...
     content_hash   TEXT NOT NULL UNIQUE,
     occurred_at    TEXT NOT NULL,          -- = start_at
     first_seen_at  TEXT NOT NULL,

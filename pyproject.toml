@@ -6,7 +6,10 @@ build-backend = "setuptools.build_meta"
 name = "secondbrain"
 version = "0.1.0"
 requires-python = ">=3.11"
-dependencies = ["sqlite-vec>=0.1.6"]
+dependencies = [
+    "google-auth-oauthlib>=1.4.1",
+    "sqlite-vec>=0.1.6",
+]
 
 [dependency-groups]
 dev = ["pytest>=8"]

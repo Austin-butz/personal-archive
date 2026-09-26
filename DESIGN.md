@@ -3,20 +3,14 @@
 > A simple, boring, trustworthy personal archive with semantic search.
 > Everything else gets built on top of this later, or not at all.
 
-## ⚠️ Deadline: Fitbit sunset — Sept 30, 2026
+## Google Health API setup
 
-Health data comes first in *urgency*, even though Obsidian comes first in build order.
-Do these now, before any code:
-
-1. **Request a Google Takeout export of Fitbit data** (backstop; no code required).
-2. **Register the Google Health API OAuth 2.0 client** (no approval gate).
-   - Set the consent screen publishing status to **"In production" (unverified)**, not
-     "Testing". Testing-mode refresh tokens expire after 7 days, which silently breaks
-     nightly jobs.
-   - Do the one-time interactive auth on the Mac mini and store the refresh token
-     locally. Nightly jobs only ever refresh; they never prompt.
-3. Pull the full available history once, into raw JSON files on disk, even before the
-   `health_metrics` ingest exists. The ingester can read those files later.
+- OAuth 2.0 **Desktop** client (loopback redirect, no redirect URI to register). The
+  client JSON lives at `~/.config/secondbrain/google_client_secret.json`, outside the repo.
+- Consent screen publishing status **"In production" (unverified)**, not "Testing":
+  Testing-mode refresh tokens expire after 7 days, which silently breaks nightly jobs.
+- One interactive sign-in (`secondbrain auth google`) stores the refresh token in
+  `~/.config/secondbrain/google_token.json`. Ingest only ever refreshes; it never prompts.
 
 ---
 
@@ -30,7 +24,7 @@ searchable by meaning with optional time filters.
 | # | Source | Input | Notes |
 |---|--------|-------|-------|
 | 1 | Obsidian | vault `.md` files | Easiest; proves the whole pipeline end to end |
-| 2 | Calendar | `.ics` files | |
+| 2 | Calendar | macOS Calendar via EventKit | One row per occurrence |
 | 3 | Health | Google Health API | Urgent — see deadline above |
 | 4 | Apple Notes & Reminders | local DBs | Hardest (protobuf bodies, WAL) |
 
@@ -131,8 +125,8 @@ CREATE TABLE notes (
 
 CREATE TABLE calendar_events (
     id             INTEGER PRIMARY KEY,
-    source         TEXT NOT NULL,          -- 'ics'
-    external_id    TEXT,                   -- UID (+ RECURRENCE-ID if present)
+    source         TEXT NOT NULL,          -- 'macos_calendar'
+    external_id    TEXT,                   -- series UID + '/' + occurrence slot
     calendar_name  TEXT,
     summary        TEXT,
     description    TEXT,
@@ -168,13 +162,14 @@ CREATE TABLE reminders (
 
 CREATE TABLE health_metrics (
     id             INTEGER PRIMARY KEY,
-    source         TEXT NOT NULL,          -- 'google_health' | 'fitbit_takeout'
+    source         TEXT NOT NULL,          -- 'google_health'
     external_id    TEXT,
     metric         TEXT NOT NULL,          -- 'steps', 'resting_hr', 'sleep_minutes', ...
     value          REAL NOT NULL,
     unit           TEXT NOT NULL,
-    start_at       TEXT NOT NULL,
+    start_at       TEXT NOT NULL,          -- YYYY-MM-DD for daily metrics, else UTC ISO
     end_at         TEXT,
+    details        TEXT,                   -- JSON: sleep stages, workout stats, ...
     content_hash   TEXT NOT NULL UNIQUE,
     occurred_at    TEXT NOT NULL,          -- = start_at
     first_seen_at  TEXT NOT NULL,
@@ -302,26 +297,71 @@ Then write counts to `ingest_runs`.
 ## 6. Per-source specifics
 
 **Obsidian**
-- Walk the vault for `*.md`, skipping `.obsidian/` and `.trash/`.
+- Walk the whole vault for `*.md`, skipping `.obsidian/`, `.trash/` and dot-folders.
+- **Private sections are stripped at read time** (`secondbrain/private.py`), before
+  hashing, storing or embedding. A section starts at an H1 reading exactly `# private`
+  (any case, trailing whitespace allowed) and runs to the next H1; `##`+ subheaders
+  inside it stay private. Headers inside fenced code blocks don't count, so a bash
+  `# comment` can't end a private section. Editing only private text creates no new row.
+- **Known gap:** append-only means text that was ingested *before* it was moved under
+  `# private` stays in the old (now stale) row. Removing it needs a manual purge of
+  that row plus `VACUUM`.
+- If iCloud has offloaded any note (`.name.md.icloud` placeholder), fetch refuses to
+  run, since those notes would otherwise be marked stale.
 - `external_id` = vault-relative POSIX path. `title` = filename stem.
 - Hashed: `external_id`, `body`. (Renaming/moving a note = new row, old row stale.)
 - `occurred_at`: frontmatter `date` if present, else file mtime *at first sighting*.
   mtime is not hashed, so touching a file does not create a new row.
 - Scope: `{"source": "obsidian"}`. Unmounted/missing vault path → fetch raises.
 
-**Calendar (.ics)**
-- `external_id` = `UID` + (`RECURRENCE-ID` if present). Expand recurring events only
-  within a bounded window; scope stale marking to that same window.
+**Calendar (macOS Calendar via EventKit)**
+- **One row per occurrence**, not per series. Apple's store (`Calendar.sqlitedb`) keeps a
+  repeating series as a single row dated to its first occurrence, and its
+  `OccurrenceCache` only covers a rolling few years, so neither can answer "what did I
+  have in March 2019". EventKit expands every occurrence, including moved and deleted
+  instances, time zones and DST.
+- EventKit runs in a small helper app, `tools/calendar-export` (Swift, built by
+  `build.sh` into `build/CalendarExport.app`), which prints occurrences as JSON Lines
+  and ends with a `{"done": true, "count": N}` sentinel. A missing or mismatched
+  sentinel makes `fetch()` raise, so nothing is written.
+- Why a helper instead of Python: macOS grants Calendar access to the *responsible
+  app*. Python run from a terminal or the Claude app inherits that app's identity, and
+  none of them declare calendar access, so the request is refused silently. The helper
+  declares it and is launched via `open`, so it gets its own one-time prompt. The grant
+  is tied to the ad-hoc signed build: rebuilding means approving again.
+- Window: `2000-01-01` to today + 365 days (EventKit queries in ≤3-year chunks).
+- `external_id` = `<series UID>/<original occurrence slot>`, the same scheme Apple uses
+  for edited occurrences. A moved occurrence keeps its `external_id`; its content hash
+  changes, so it becomes a new row and the old one goes stale.
 - Hashed: `external_id`, `calendar_name`, `summary`, `description`, `location`,
-  `starts_at`, `ends_at`, `all_day`. Excluded: `DTSTAMP`, `LAST-MODIFIED`, `SEQUENCE`.
+  `starts_at`, `ends_at`, `all_day`. Excluded: last-modified, sequence numbers.
+- `starts_at`/`ends_at`: UTC ISO-8601, or `YYYY-MM-DD` for all-day events (floating
+  dates). `occurred_at` for all-day events is that date at `T00:00:00Z`.
+- Scope: `source = 'macos_calendar'` **and** `starts_at` inside the window, so events
+  past the horizon are never staled by a fetch that didn't look that far.
+- Known consequence: renaming a repeating series renames every past occurrence in
+  Apple's data too, so every occurrence gets a new row and the old ones go stale.
 
-**Health (Google Health API)**
-- v0 stores **daily-granularity** data as the API returns it (daily steps, resting HR,
-  sleep duration, etc.). Intraday samples are out of scope — they would be millions of
-  near-meaningless chunks.
-- Hashed: `metric`, `value`, `unit`, `start_at`, `end_at`, `external_id`.
-- Scope: by `source` and the fetched date range.
-- Takeout files ingest into the same table with `source = 'fitbit_takeout'`.
+**Health (Google Health API)** (`secondbrain/sources/google_health.py`)
+- **Daily granularity only.** One row per day for daily totals and summaries, one row
+  per sleep session, exercise and weigh-in. Intraday samples (heart rate every few
+  seconds, per-minute steps) are out of scope.
+- Metrics and where they come from:
+  - `dailyRollUp` (Google's per-day totals; days without data are omitted): steps,
+    distance, floors, active zone minutes, calories. Requests are capped at 90 days
+    (14 for calories). Rollups stop at *yesterday*, so only complete days are stored.
+  - `list` on daily-summary types: resting heart rate, HRV, SpO2, respiratory rate.
+  - `list` on sessions/samples (through today): sleep (stages in `details`),
+    exercise (type, distance, calories, avg heart rate, steps in `details`), weight.
+- **Each metric is its own ingest run** with scope `source + metric + start_at in
+  window`, so the safety check is per metric. The sleep endpoint has been seen to
+  return nothing intermittently; that must trip sleep's check rather than stale sleep.
+- `external_id`: the API's data point name for sessions and samples; `<metric>/<date>`
+  for daily rows. `start_at` is `YYYY-MM-DD` for daily rows, UTC ISO otherwise.
+- Hashed: `external_id`, `metric`, `value`, `unit`, `start_at`, `end_at`, `details`.
+  Excluded: `createTime`, `updateTime`, `dataSource`. Values are rounded before hashing.
+  A late sync that revises a day produces a new row and stales the old one.
+- Window: `2026-01-01` (nothing earlier exists on the account) to today.
 
 **Apple Notes & Reminders** — design when we get there. Known issues: protobuf-encoded
 note bodies, reading a live WAL-mode DB (copy the DB + `-wal` + `-shm` together, open
@@ -354,7 +394,7 @@ Over-fetch and filter in Python. Good enough well past 100k chunks; revisit at ~
 ## 8. Definition of done for v0
 
 - [ ] `DESIGN.md` (this file)
-- [ ] Fitbit Takeout requested; Google Health OAuth client registered (**by Sept 30**)
+- [x] Google Health OAuth client registered
 - [ ] Schema created; Obsidian ingests end to end; `search "..."` returns sensible hits
 - [ ] Re-running ingest with no changes inserts 0 rows, stales 0 rows
 - [ ] Editing a note → 1 new row, 1 stale row, new chunks, old chunks stale

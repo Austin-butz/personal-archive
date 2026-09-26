@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>local.secondbrain.calendar-export</string>
+    <key>CFBundleName</key>
+    <string>CalendarExport</string>
+    <key>CFBundleExecutable</key>
+    <string>CalendarExport</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSUIElement</key>
+    <true/>
+    <key>NSCalendarsFullAccessUsageDescription</key>
+    <string>secondbrain reads your calendar events to index them for local search. Nothing leaves this Mac.</string>
+</dict>
+</plist>

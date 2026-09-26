@@ -5,6 +5,7 @@ from pathlib import Path
 
 from ..chunking import chunk_text
 from ..hashing import utc_iso
+from ..private import strip_private
 
 SKIP_DIRS = {".obsidian", ".trash"}
 _FRONTMATTER = re.compile(r"\A---\n(.*?)\n---\n", re.S)
@@ -31,15 +32,28 @@ class Obsidian:
     def __init__(self, vault):
         self.vault = Path(vault).expanduser()
 
+    def _skipped(self, path):
+        parts = path.relative_to(self.vault).parts[:-1]
+        return any(p in SKIP_DIRS or p.startswith(".") for p in parts)
+
     def fetch(self):
         if not self.vault.is_dir():
             raise FileNotFoundError(f"vault not found (not mounted?): {self.vault}")
+        # iCloud swaps offloaded files for hidden `.name.md.icloud` placeholders. Those
+        # notes would silently drop out of the fetch and be marked stale, so refuse.
+        evicted = sorted(p.relative_to(self.vault).as_posix()
+                         for p in self.vault.rglob("*.md.icloud") if not self._skipped(p))
+        if evicted:
+            raise RuntimeError(f"{len(evicted)} notes are offloaded to iCloud, not on disk "
+                               f"(e.g. {evicted[0]}); download them first (Finder > "
+                               "Download Now, or `brctl download <vault>`)")
         items = []
         for path in sorted(self.vault.rglob("*.md")):
-            rel = path.relative_to(self.vault)
-            if any(p in SKIP_DIRS or p.startswith(".") for p in rel.parts[:-1]):
+            if self._skipped(path):
                 continue
-            body = path.read_text(encoding="utf-8", errors="replace")
+            rel = path.relative_to(self.vault)
+            # Private sections never leave this function: not stored, hashed or embedded.
+            body = strip_private(path.read_text(encoding="utf-8", errors="replace"))
             mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
             items.append({
                 "source": self.source,
