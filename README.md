@@ -56,6 +56,10 @@ it again. Pushes are recorded in the `health_writes` table.
 Writing needs the `googlehealth.nutrition.writeonly` scope. Tokens from before it was
 added still work for ingest; `log` asks you to re-run `auth google` once.
 
+Over SSH, where the browser can't reach this machine: `auth google --headless` prints the
+consent URL; approve it on any device, then pass the `http://localhost:8765/?...` address
+the browser lands on (the page won't load) to `auth google --finish 'URL'` within a few minutes.
+
 Ingest exits with code 2 if the safety check trips (a source looks unexpectedly empty).
 If the drop is real, re-run with `--force`.
 

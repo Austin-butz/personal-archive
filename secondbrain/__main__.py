@@ -62,11 +62,23 @@ def main(argv=None):
 
     au = sub.add_parser("auth", help="one-time interactive sign-in")
     au.add_argument("provider", choices=["google"])
+    au.add_argument("--headless", action="store_true",
+                    help="over SSH: print the URL instead of waiting for the browser's redirect")
+    au.add_argument("--finish", metavar="URL",
+                    help="the localhost URL the browser landed on after --headless")
     a = p.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     if a.cmd == "auth":
-        from .google_auth import TOKEN_FILE, authorize
-        authorize()
+        from . import google_auth as ga
+        if a.headless:
+            print("open this, approve, then copy the localhost URL your browser lands on "
+                  "(it won't load) into `auth google --finish URL`:\n" + ga.headless_url())
+            return 0
+        if a.finish:
+            ga.headless_finish(a.finish)
+        else:
+            ga.authorize()
+        TOKEN_FILE = ga.TOKEN_FILE
         print(f"signed in; refresh token saved to {TOKEN_FILE}")
         return 0
     if a.cmd == "sql":
