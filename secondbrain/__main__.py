@@ -1,5 +1,6 @@
-"""CLI: python -m secondbrain {ingest,search,status,recent,sql,auth}"""
+"""CLI: python -m secondbrain {ingest,search,status,recent,sql,log,auth}"""
 import argparse
+import json
 import logging
 import os
 import sys
@@ -41,6 +42,24 @@ def main(argv=None):
     sq.add_argument("--limit", type=int, default=200)
     sq.add_argument("--json", action="store_true")
 
+    lg = sub.add_parser("log", help="push a meal or water to Google Health")
+    lsub = lg.add_subparsers(dest="what", required=True)
+    w = lsub.add_parser("water", help="e.g. log water 16oz")
+    w.add_argument("amount", help="number + unit: oz, ml, l, cup(s)")
+    ml = lsub.add_parser("meal", help='e.g. log meal "chicken and rice" --kcal 650 --protein 45')
+    ml.add_argument("food", help="what you ate, as it should show in Fitbit")
+    ml.add_argument("--kcal", type=float, required=True)
+    ml.add_argument("--protein", type=float, required=True, help="grams")
+    ml.add_argument("--meal", choices=["breakfast", "lunch", "dinner", "snack"])
+    for x in (w, ml):
+        x.add_argument("--at", help="HH:MM today, or ISO date-time; default now (local time)")
+        x.add_argument("--yes", action="store_true", help="push without asking")
+        x.add_argument("--dry-run", action="store_true", help="print the request and stop")
+    lsub.add_parser("list", help="entries pushed from here, newest first")
+    ud = lsub.add_parser("undo", help="delete a pushed entry from Google (default: the latest)")
+    ud.add_argument("id", nargs="?", type=int)
+    ud.add_argument("--yes", action="store_true")
+
     au = sub.add_parser("auth", help="one-time interactive sign-in")
     au.add_argument("provider", choices=["google"])
     a = p.parse_args(argv)
@@ -63,6 +82,8 @@ def main(argv=None):
     if a.cmd == "recent":
         from . import recent
         print(recent.report(db, hours=a.days * 24 if a.days else a.hours, ahead=a.ahead), end="")
+    elif a.cmd == "log":
+        return _log(db, a)
     elif a.cmd == "ingest":
         if a.source == "health":
             return _ingest_health(db, a.force)
@@ -112,6 +133,53 @@ def _ingest_health(db, force):
             print(f"{m.name:20} FAILED: {type(e).__name__}: {e}", file=sys.stderr)
             code = max(code, 1)
     return code
+
+
+def _log(db, a):
+    """Writes to Google, so it shows the entry and asks first unless --yes."""
+    from . import health_log as hl
+    from .google_auth import NUTRITION_WRITE, session
+
+    try:
+        if a.what == "list":
+            for e in hl.entries(db):
+                gone = f"  [undone {e['deleted_at']}]" if e["deleted_at"] else ""
+                print(f"#{e['id']:<4} {e['summary']}{gone}")
+            return 0
+        if a.what == "undo":
+            row = hl.find_undoable(db, a.id)
+            if not _confirm(f"delete from Google Health: #{row['id']} {row['summary']}", a.yes):
+                return 1
+            hl.undo(db, hl.HealthWriter(session(require=NUTRITION_WRITE)), row)
+            print(f"undone #{row['id']}")
+            return 0
+        at = hl.parse_time(a.at)
+        if a.what == "water":
+            body = hl.hydration_body(*hl.parse_volume(a.amount), at)
+        else:
+            body = hl.meal_body(a.food, a.kcal, a.protein, a.meal, at)
+        if a.dry_run:
+            print(json.dumps(body, indent=2))
+            return 0
+        if not _confirm(f"push to Google Health: {hl.describe(body)}", a.yes):
+            return 1
+        r = hl.push(db, hl.HealthWriter(session(require=NUTRITION_WRITE)), body)
+        note = "" if r["name"] else " (Google hasn't confirmed it yet; it can't be undone from here)"
+        print(f"logged #{r['id']}: {r['summary']}{note}")
+        return 0
+    except (ValueError, LookupError, RuntimeError) as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 1
+
+
+def _confirm(what, yes):
+    print(what)
+    if yes:
+        return True
+    if not sys.stdin.isatty():
+        print("not pushed: pass --yes to confirm", file=sys.stderr)
+        return False
+    return input("ok? [y/N] ").strip().lower() in ("y", "yes")
 
 
 if __name__ == "__main__":

@@ -211,6 +211,19 @@ the data is:
 SELECT source, max(finished_at) FROM ingest_runs WHERE error IS NULL GROUP BY source;
 ```
 
+### health_writes
+
+Meals and water pushed to Google Health with `log`, one row per push (created on the
+first `log`, so it may not exist yet). Not a source table: no hash or `stale_at`.
+`data_type` is `nutrition-log` or `hydration-log`, `logged_for` is the UTC start of the
+entry, `summary` is one readable line (food, kcal, protein; or water in ml), `request` is
+the JSON sent, and `deleted_at` is set if the entry was undone. Ignore undone rows:
+
+```sql
+SELECT date(logged_for, 'localtime') AS day, summary FROM health_writes
+WHERE deleted_at IS NULL ORDER BY logged_for;
+```
+
 ## CLI tools for AI use
 
 - `python -m secondbrain recent --hours 24` (or `--days 7`): what changed, plus upcoming

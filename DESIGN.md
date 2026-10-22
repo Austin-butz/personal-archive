@@ -436,6 +436,16 @@ an AI reader is `docs/DB.md`.
   rows closest to now, whole deleted reminder lists collapse to one line, and a `skip`
   set lets two reports share a page without repeating rows.
 
+## 8a. Write-back: `log` (Google Health only)
+
+The one path that writes outside the archive. `log meal` / `log water` push
+`nutrition-log` / `hydration-log` data points from numbers the user gives (no LLM in the
+command; an assistant may estimate macros, but the user confirms the exact entry). Every
+push is shown first and needs a yes (`--yes` when non-interactive). Pushes are recorded
+in `health_writes`, a bookkeeping table outside the source-table rules, so `log undo` can
+batchDelete them. Ingest doesn't read nutrition back yet (`nutrition.readonly` isn't
+requested).
+
 ## 9. Definition of done for v0
 
 - [ ] `DESIGN.md` (this file)

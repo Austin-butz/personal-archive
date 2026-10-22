@@ -18,9 +18,10 @@ CLIENT_FILE = CONFIG_DIR / "google_client_secret.json"
 TOKEN_FILE = CONFIG_DIR / "google_token.json"
 
 _BASE = "https://www.googleapis.com/auth/googlehealth."
+NUTRITION_WRITE = _BASE + "nutrition.writeonly"  # `log` pushes meals and water
 SCOPES = [_BASE + s for s in ("activity_and_fitness.readonly",
                               "health_metrics_and_measurements.readonly",
-                              "sleep.readonly")]
+                              "sleep.readonly")] + [NUTRITION_WRITE]
 
 
 def _save(creds: Credentials):
@@ -45,11 +46,17 @@ def authorize() -> Credentials:
     return creds
 
 
-def session() -> AuthorizedSession:
-    """Non-interactive: an HTTP session with a fresh access token, or a clear error."""
+def session(require: str | None = None) -> AuthorizedSession:
+    """Non-interactive: an HTTP session with a fresh access token, or a clear error.
+
+    The token keeps the scopes it was granted, so a token from before a scope was added
+    to SCOPES still refreshes; only callers that `require` the new scope are refused."""
     if not TOKEN_FILE.exists():
         raise RuntimeError("no Google token: run `secondbrain auth google` once")
-    creds = Credentials.from_authorized_user_info(json.loads(TOKEN_FILE.read_text()), SCOPES)
+    creds = Credentials.from_authorized_user_info(json.loads(TOKEN_FILE.read_text()))
+    if require and require not in (creds.scopes or ()):
+        raise RuntimeError(f"the Google token wasn't granted {require}: re-run "
+                           "`secondbrain auth google` and allow it")
     if not creds.valid:
         try:
             creds.refresh(Request())

@@ -18,14 +18,20 @@ client JSON. Reference implementation: `secondbrain/google_auth.py` and
 - Desktop clients use a loopback redirect, so **no redirect URI needs registering**.
 - Only dependency: `google-auth-oauthlib` (pulls in `google-auth` and `requests`).
 
-## 2. Scopes (read-only)
+## 2. Scopes
 
 ```python
 _BASE = "https://www.googleapis.com/auth/googlehealth."
+NUTRITION_WRITE = _BASE + "nutrition.writeonly"
 SCOPES = [_BASE + s for s in ("activity_and_fitness.readonly",
                               "health_metrics_and_measurements.readonly",
-                              "sleep.readonly")]
+                              "sleep.readonly")] + [NUTRITION_WRITE]
 ```
+
+`nutrition.writeonly` is only for `log` (section 6); ingest needs the three read scopes.
+`session()` loads the token with the scopes it was granted rather than `SCOPES`, so adding
+a scope doesn't break refresh for an older token; `session(require=...)` refuses with
+"re-run `auth google`" when the token lacks a scope a caller needs.
 
 ## 3. Auth: one interactive consent, then refresh only
 
@@ -146,3 +152,33 @@ Use `p["name"]` as the stable ID for sleep/exercise/weight points.
 3. Run the `InstalledAppFlow` snippet once with the scopes above; save the token (0600).
 4. On each run: load token → refresh if needed → `AuthorizedSession`.
 5. Hit `dailyRollUp` / `dataPoints` as in §4, paginate, parse.
+
+## 6. Writing meals and water (`log`)
+
+Reference implementation: `secondbrain/health_log.py`. Scope: `nutrition.writeonly`.
+
+```
+POST {base}/nutrition-log/dataPoints
+{"nutritionLog": {"interval": {"startTime": "2026-10-22T23:00:00Z", "startUtcOffset": "-14400s",
+                               "endTime": "2026-10-22T23:30:00Z", "endUtcOffset": "-14400s"},
+                  "foodDisplayName": "chicken and rice", "mealType": "DINNER",
+                  "energy": {"kcal": 650},
+                  "nutrients": [{"nutrient": "PROTEIN", "quantity": {"grams": 45}}]}}
+
+POST {base}/hydration-log/dataPoints
+{"hydrationLog": {"interval": {... one second long ...},
+                  "amountConsumed": {"milliliters": 473.2, "userProvidedUnit": "FLUID_OUNCE_US"}}}
+
+→ {"done": true, "response": {"name": "users/.../dataTypes/nutrition-log/dataPoints/ID", ...}}
+```
+
+- Create returns an `Operation`. Keep `response.name`; it is the only handle for deleting.
+- Intervals need both UTC times and the local `*UtcOffset` (seconds, `"-14400s"`), so the
+  entry lands on the right civil day in daily rollups.
+- `mealType`: `BREAKFAST`, `LUNCH`, `DINNER`, `SNACK` (also `BEFORE_BREAKFAST`,
+  `BEFORE_LUNCH`, `BEFORE_DINNER`, `AFTER_DINNER`, `ANYTIME`). `energy.kcal` and
+  nutrient `grams` must be in [0, 100000].
+- A log made from `foodDisplayName` plus manual numbers ("anonymous food") can't be
+  edited. Hydration logs can be PATCHed, but `log` treats both the same: undo and re-log.
+- Delete with `POST {base}/{dataType}/dataPoints:batchDelete {"names": [...]}`; a plain
+  HTTP DELETE on a data point isn't supported.

@@ -35,6 +35,26 @@ uv run python -m secondbrain recent --hours 24      # what changed, for an AI re
 uv run python -m secondbrain sql "SELECT metric, count(*) FROM health_metrics GROUP BY 1"
 ```
 
+### Logging meals and water to Google Health
+
+`log` is the one command that writes to Google. It pushes "anonymous" entries: the food
+name and numbers you give, with no food-database lookup.
+
+```sh
+uv run python -m secondbrain log meal "chicken and rice" --kcal 650 --protein 45 --meal dinner
+uv run python -m secondbrain log water 16oz --at 14:30      # oz, ml, l, cup(s)
+uv run python -m secondbrain log list                       # what was pushed from here
+uv run python -m secondbrain log undo [ID]                  # delete from Google; default latest
+```
+
+Each command prints the entry and asks before pushing; `--yes` skips the question (and is
+required when stdin isn't a terminal), `--dry-run` prints the request body instead.
+`--at` takes `HH:MM` for today or an ISO date-time, in local time; the default is now.
+Google can't edit an anonymous meal after creation, so fix a mistake with `undo` and log
+it again. Pushes are recorded in the `health_writes` table.
+
+Writing needs the `googlehealth.nutrition.writeonly` scope. Tokens from before it was
+added still work for ingest; `log` asks you to re-run `auth google` once.
 
 Ingest exits with code 2 if the safety check trips (a source looks unexpectedly empty).
 If the drop is real, re-run with `--force`.
