@@ -88,3 +88,37 @@ def test_freshness_line(db):
 def test_empty_db_renders(tmp_path):
     out = recent.report(dbmod.connect(tmp_path / "e.db"), now=NOW)
     assert "(none)" in out and "no ingest runs yet" in out
+
+
+def test_change_sections_keep_rows_closest_to_now(db):
+    new = "2026-10-21T08:00:00.000000Z"
+    for i in range(recent.MAX_CHANGED + 5):
+        year = 2000 + i  # 2000..2034: the ones nearest 2026 should survive
+        insert(db, "calendar_events", new, summary=f"Edit {year}", calendar_name="Old",
+               starts_at=f"{year}-06-01T12:00:00Z", ends_at=f"{year}-06-01T13:00:00Z",
+               occurred_at=f"{year}-06-01T12:00:00Z")
+    out = recent.report(db, hours=24, ahead=0, now=NOW)
+    section = out.split("## Calendar: events edited")[1].split("\n## ")[0]
+    assert f"(showing the {recent.MAX_CHANGED} closest to now of {recent.MAX_CHANGED + 6}" in section
+    assert "Edit 2026" in section and "Edit 2000" not in section
+    years = [int(l.split("Edit ")[1][:4]) for l in section.splitlines() if "Edit " in l]
+    assert years == sorted(years)
+
+
+def test_skip_set_prevents_repeats(db):
+    shown = set()
+    first = recent.report(db, hours=24, ahead=48, now=NOW, skip=shown)
+    second = recent.report(db, hours=24 * 7, ahead=0, now=NOW, skip=shown)
+    assert "reminders#3 " in first and "reminders#3 " not in second
+    assert "rows already listed above are not repeated" in second
+
+
+def test_deleted_list_collapses_to_one_line(db):
+    gone, old = "2026-10-21T08:00:00.000000Z", "2026-09-01T00:00:00.000000Z"
+    for i in range(4):
+        insert(db, "reminders", old, stale=gone, external_id=f"w{i}", title=f"Set {i}",
+               list_name="Workout (9/1)", priority=0, occurred_at="2026-09-01T00:00:00Z")
+    out = recent.report(db, hours=24, now=NOW)
+    assert "- reminders list deleted from the app: 'Workout (9/1)' (4 items;" in out
+    assert "Set 2" not in out
+    assert "- reminders#2  Reminder: Call plumber (open)" in out  # superseded rows still listed

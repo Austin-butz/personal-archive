@@ -23,7 +23,8 @@ from .sources.macos_calendar import MacCalendar
 _HEALTH = {m.name: m for m in METRICS}
 MAX_ROWS = {"health_metrics": 400}
 MAX_SCHEDULED = 60
-NOTE_PREVIEW = 400
+MAX_CHANGED = 30  # per change section; a catch-up ingest can touch hundreds of rows
+NOTE_PREVIEW = 240
 
 
 def _stamp(dt: datetime) -> str:
@@ -75,9 +76,9 @@ def render_row(table: str, row) -> str:
         body = _render(m, row) if m else f"Health: {row['metric']} {row['value']} {row['unit']}"
         return _one_line(body)
     if table == "calendar_events":
-        return _one_line(MacCalendar.chunk_texts(None, row)[0], 500)
+        return _one_line(MacCalendar.chunk_texts(None, row)[0], 300)
     if table == "reminders":
-        return _one_line(AppleReminders.chunk_texts(None, row)[0], 500)
+        return _one_line(AppleReminders.chunk_texts(None, row)[0], 300)
     if table == "notes":
         preview = " ".join(row["body"].split())
         return _one_line(f"Note: {row['external_id']} ({_local(row['occurred_at'])}) | {preview}",
@@ -109,8 +110,28 @@ def freshness(db) -> list[str]:
     return [f"{src}: last ingest {_local(at[:19] + 'Z')}" for src, at in out]
 
 
+def _collapse_deleted_lists(db, rows, since: datetime) -> tuple[list, list[str]]:
+    """Reminders removed in the window whose whole list is gone from the app become one
+    line per list instead of one per item; the rows stay queryable as history."""
+    a = _stamp(since)
+    gone = {r["list_name"] for r in db.execute(
+        """SELECT list_name FROM reminders WHERE list_name IS NOT NULL
+           GROUP BY list_name HAVING sum(stale_at IS NULL) = 0 AND max(stale_at) >= ?""", (a,))}
+    keep, counts = [], {}
+    for r in rows:
+        if r["list_name"] in gone and r["stale_at"] and r["stale_at"] >= a:
+            counts[r["list_name"]] = counts.get(r["list_name"], 0) + 1
+        else:
+            keep.append(r)
+    lines = [f"- reminders list deleted from the app: {name!r} ({n} items; still in the "
+             "database as history, query by list_name)" for name, n in sorted(counts.items())]
+    return keep, lines
+
+
 def report(db, hours: float = 24, ahead: float = 24, now: datetime | None = None,
-           title: str | None = None) -> str:
+           title: str | None = None, skip: set | None = None) -> str:
+    """`skip` is a set of (table, id) already shown elsewhere; those rows are left out and
+    the rows shown here are added to it, so several reports can share one prompt."""
     now = now or datetime.now(timezone.utc)
     since, until = now - timedelta(hours=hours), now
     horizon = now + timedelta(hours=ahead)
@@ -123,6 +144,8 @@ def report(db, hours: float = 24, ahead: float = 24, now: datetime | None = None
            "Each line is table#id; times are local unless marked Z (UTC).",
            "Data freshness: " + ("; ".join(freshness(db)) or "no ingest runs yet"), ""]
 
+    reminders_changed, deleted_lists = _collapse_deleted_lists(
+        db, changed(db, "reminders", since, until), since)
     health = scheduled(db, "health_metrics", since, horizon)
     health_ids = {r["id"] for r in health}
     revised = sum(1 for r in changed(db, "health_metrics", since, until) if r["id"] not in health_ids)
@@ -136,24 +159,41 @@ def report(db, hours: float = 24, ahead: float = 24, now: datetime | None = None
           if not (since <= _dt(r["occurred_at"]) < horizon)]),
         ("Reminders: open and due (including overdue)", "reminders",
          scheduled(db, "reminders", since, horizon)),
-        ("Reminders: completed, added, edited or deleted", "reminders",
-         changed(db, "reminders", since, until)),
+        ("Reminders: completed, added, edited or deleted", "reminders", reminders_changed),
         ("Notes: added or edited (lower priority)", "notes", changed(db, "notes", since, until)),
     ]
-    seen = set()
+    seen = skip if skip is not None else set()
+    repeated = 0
     for heading, table, rows in sections:
-        cap = MAX_ROWS.get(table, MAX_SCHEDULED)
-        truncated = len(rows) > cap
-        rows = [r for r in rows[:cap] if (table, r["id"]) not in seen]
+        is_change = heading.endswith(("edited, added or removed", "edited or deleted",
+                                      "(lower priority)"))
+        cap = MAX_CHANGED if is_change else MAX_ROWS.get(table, MAX_SCHEDULED)
+        fresh = [r for r in rows if (table, r["id"]) not in seen]
+        repeated += len(rows) - len(fresh)
+        total = len(fresh)
+        truncated = total > cap
+        if truncated and is_change:
+            # Keep the changes closest to now (an edit to a 2019 event matters least),
+            # then show them in date order.
+            fresh = sorted(sorted(fresh, key=lambda r: abs((_dt(r["occurred_at"]) - now).total_seconds()))[:cap],
+                           key=lambda r: (r["occurred_at"], r["id"]))
+        rows = fresh[:cap]
         seen.update((table, r["id"]) for r in rows)
-        out.append(f"## {heading} ({len(rows)})")
-        out += _lines(table, rows, since) or ["(none)"]
+        extra = []
+        if heading.startswith("Reminders: completed"):
+            extra = [l for l in deleted_lists if ("list", l) not in seen]
+            seen.update(("list", l) for l in extra)
+        out.append(f"## {heading} ({len(rows) + len(extra)})")
+        out += extra + _lines(table, rows, since) or ["(none)"]
         if truncated:
-            out.append(f"(more than {cap}; use the sql tool to see the rest)")
+            which = "closest to now" if is_change else "earliest"
+            out.append(f"(showing the {cap} {which} of {total}; use the sql tool for the rest)")
         if table == "health_metrics" and revised:
             out.append(f"({revised} older health rows were added or revised by the last sync; "
                        "not shown)")
         out.append("")
+    if repeated:
+        out.append(f"({repeated} rows already listed above are not repeated.)")
     return "\n".join(out).rstrip() + "\n"
 
 

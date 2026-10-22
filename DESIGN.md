@@ -432,6 +432,9 @@ an AI reader is `docs/DB.md`.
   look-ahead. One line per row, prefixed `+`/`-`/` ` and `table#id`.
 - `sql "SELECT ..."`: one statement on a read-only connection fenced by an authorizer
   (SELECT/READ/FUNCTION only), rows capped, long cells cut.
+- `recent` stays bounded after a catch-up ingest: change sections are capped at the 30
+  rows closest to now, whole deleted reminder lists collapse to one line, and a `skip`
+  set lets two reports share a page without repeating rows.
 
 ## 9. Definition of done for v0
 

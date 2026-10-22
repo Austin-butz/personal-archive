@@ -4,7 +4,9 @@ import sqlite_vec
 K_MAX = 4096  # sqlite-vec's cap on k
 
 
-def search(db, embedder, query, limit=10, since=None, until=None):
+def search(db, embedder, query, limit=10, since=None, until=None, include_stale=False):
+    """Nearest chunks to `query`. Stale chunks (deleted or superseded at the source) are
+    left out unless `include_stale`; they are history, not current state."""
     q = sqlite_vec.serialize_float32(embedder.query(query))
     total = db.execute("SELECT count(*) FROM chunks").fetchone()[0]
     k = min(limit * 5, K_MAX)
@@ -17,7 +19,7 @@ def search(db, embedder, query, limit=10, since=None, until=None):
                ORDER BY v.distance""",
             (q, k)).fetchall()
         hits = [r for r in rows
-                if r["stale_at"] is None
+                if (include_stale or r["stale_at"] is None)
                 and (since is None or r["occurred_at"] >= since)
                 and (until is None or r["occurred_at"] < until)]
         if len(hits) >= limit or k >= total or k >= K_MAX:

@@ -9,9 +9,23 @@ This guide is for anyone, human or AI, writing SQL against it. Full design: `DES
 - **Append-only.** Content columns are never updated. When an item changes at its
   source, a *new row* is inserted and the old row is marked stale. So the same reminder
   or event can appear several times; only one version is current.
-- **Current rows have `stale_at IS NULL`.** Almost every query wants
-  `WHERE stale_at IS NULL`. Rows with `stale_at` set were deleted at the source or
-  superseded by a newer version (the newer version has the same `external_id`).
+- **Current rows have `stale_at IS NULL`.** Questions about *now* (what is open, what
+  is scheduled, today's numbers) want `WHERE stale_at IS NULL`. Rows with `stale_at`
+  set are history, of two kinds:
+  - **superseded**: a newer row with the same `external_id` exists (an edit, a
+    completed reminder, a late health sync). Usually skip these.
+  - **deleted at the source**: no newer row exists. These are still real records of
+    what happened, e.g. reminder lists the person deleted after using them. Include
+    them for questions about the past.
+- **Latest version of every item, deleted or not** (works for any table):
+
+  ```sql
+  WITH latest AS (
+    SELECT t.*, row_number() OVER (PARTITION BY external_id
+                                   ORDER BY first_seen_at DESC, id DESC) AS rn
+    FROM reminders t)
+  SELECT *, stale_at IS NOT NULL AS deleted FROM latest WHERE rn = 1;
+  ```
 - **Timestamps are text.** `occurred_at`, `first_seen_at`, `last_seen_at`, `stale_at`
   are UTC ISO-8601 strings (`2026-10-20T13:05:00Z`; bookkeeping ones have
   microseconds). They sort and compare correctly as strings. Date-only values
@@ -117,6 +131,34 @@ ORDER BY due_at;
 -- completed in the last day
 SELECT completed_at, title, parent_title FROM reminders
 WHERE stale_at IS NULL AND completed_at >= datetime('now', '-1 day') ORDER BY completed_at;
+```
+
+**Reminder history, including deleted lists.** Workouts are often logged as a list per
+session, e.g. `Workout (9/17)`: top-level items are exercises with weight and reps
+("Chest press - 10 @ 120lb"), subtasks are sets ("Set 1"), and free-text items are notes
+("Had to stop early"). Most past lists have been deleted from the app, so their rows are
+stale. Do not filter on `stale_at` when reading them:
+
+```sql
+-- every list, newest first, and whether it still exists in the app
+WITH latest AS (
+  SELECT r.*, row_number() OVER (PARTITION BY external_id ORDER BY first_seen_at DESC, id DESC) AS rn
+  FROM reminders r)
+SELECT list_name, count(*) AS items, sum(completed_at IS NOT NULL) AS done,
+       substr(min(occurred_at), 1, 10) AS dated, sum(stale_at IS NULL) > 0 AS still_in_app
+FROM latest WHERE rn = 1 GROUP BY list_name ORDER BY dated DESC;
+
+-- one workout list: exercises, then their sets
+WITH latest AS (
+  SELECT r.*, row_number() OVER (PARTITION BY external_id ORDER BY first_seen_at DESC, id DESC) AS rn
+  FROM reminders r)
+SELECT coalesce(parent_title, title) AS exercise, title, completed_at
+FROM latest WHERE rn = 1 AND list_name = 'Workout (9/17)'
+ORDER BY exercise, parent_title IS NOT NULL, title;
+
+-- how one exercise's weight changed over time
+SELECT DISTINCT substr(occurred_at, 1, 10) AS day, list_name, title FROM reminders
+WHERE parent_external_id IS NULL AND title LIKE 'Chest press%' ORDER BY day;
 ```
 
 ### calendar_events  (source = 'macos_calendar')
