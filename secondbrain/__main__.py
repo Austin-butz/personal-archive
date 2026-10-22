@@ -8,6 +8,7 @@ from . import db as dbmod
 from .embed import OllamaEmbedder
 from .ingest import SafetyTripped, run
 from .search import search
+from .sources.apple_reminders import AppleReminders
 from .sources.macos_calendar import MacCalendar
 from .sources.obsidian import Obsidian
 
@@ -18,7 +19,7 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
 
     ing = sub.add_parser("ingest")
-    ing.add_argument("source", choices=["obsidian", "calendar", "health"])
+    ing.add_argument("source", choices=["obsidian", "calendar", "reminders", "health"])
     ing.add_argument("--vault", default=os.environ.get("OBSIDIAN_VAULT"))
     ing.add_argument("--force", action="store_true", help="mark stale even if the safety check trips")
 
@@ -48,6 +49,8 @@ def main(argv=None):
             if not a.vault:
                 p.error("--vault or OBSIDIAN_VAULT is required")
             src = Obsidian(a.vault)
+        elif a.source == "reminders":
+            src = AppleReminders()
         else:
             src = MacCalendar()
         try:

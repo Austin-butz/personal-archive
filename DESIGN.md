@@ -143,21 +143,24 @@ CREATE TABLE calendar_events (
 );
 
 CREATE TABLE reminders (
-    id             INTEGER PRIMARY KEY,
-    source         TEXT NOT NULL,          -- 'apple_reminders'
-    external_id    TEXT,
-    list_name      TEXT,
-    title          TEXT NOT NULL,
-    notes          TEXT,
-    due_at         TEXT,
-    completed_at   TEXT,
-    priority       INTEGER,
-    content_hash   TEXT NOT NULL UNIQUE,
-    occurred_at    TEXT NOT NULL,          -- coalesce(due_at, completed_at, first_seen_at)
-    first_seen_at  TEXT NOT NULL,
-    last_seen_at   TEXT NOT NULL,
-    stale_at       TEXT,
-    chunked_at     TEXT
+    id                 INTEGER PRIMARY KEY,
+    source             TEXT NOT NULL,      -- 'apple_reminders'
+    external_id        TEXT,               -- CloudKit record id
+    list_name          TEXT,
+    title              TEXT NOT NULL,
+    notes              TEXT,
+    due_at             TEXT,               -- UTC ISO, or YYYY-MM-DD if all-day
+    completed_at       TEXT,
+    priority           INTEGER,            -- 0 none, 1 high, 5 medium, 9 low
+    created_at         TEXT,
+    parent_external_id TEXT,               -- set for subtasks
+    parent_title       TEXT,
+    content_hash       TEXT NOT NULL UNIQUE,
+    occurred_at        TEXT NOT NULL,      -- coalesce(completed_at, due_at, created_at)
+    first_seen_at      TEXT NOT NULL,
+    last_seen_at       TEXT NOT NULL,
+    stale_at           TEXT,
+    chunked_at         TEXT
 );
 
 CREATE TABLE health_metrics (
@@ -363,9 +366,31 @@ Then write counts to `ingest_runs`.
   A late sync that revises a day produces a new row and stales the old one.
 - Window: `2026-01-01` (nothing earlier exists on the account) to today.
 
-**Apple Notes & Reminders** — design when we get there. Known issues: protobuf-encoded
-note bodies, reading a live WAL-mode DB (copy the DB + `-wal` + `-shm` together, open
-the copy read-only).
+**Apple Reminders** (`secondbrain/sources/apple_reminders.py`)
+- Read from the Reminders app's own Core Data store
+  (`~/Library/Group Containers/group.com.apple.reminders/Container_v1/Stores/Data-*.sqlite`,
+  every file), not EventKit: EventKit has no subtasks, and ~40% of reminders are
+  subtasks whose meaning depends on their parent ("Set 2" → "Leg presses").
+- Each store is snapshotted into memory with SQLite's backup API from a read-only
+  handle (`secondbrain/apple_store.py`); the live file is never queried in place.
+- The query names its columns, so a schema change in a macOS update fails the fetch
+  instead of storing wrong data. A reminder with no title also fails the fetch (Apple
+  has been moving some text into CRDT documents).
+- One row per reminder. Deleted reminders (and those in deleted lists) are excluded,
+  so they go stale. Completing a reminder is a new row; the open version goes stale.
+  Repeating reminders: Apple keeps a completed copy per completion, so history is
+  in the source.
+- Hashed: `external_id` (CloudKit id), `list_name`, `title`, `notes`, `due_at`,
+  `completed_at`, `priority`, `parent_external_id`, `parent_title`. Excluded:
+  last-modified time, CloudKit flags, display order. Renaming a parent re-rows its
+  subtasks.
+- `due_at`: UTC ISO, or `YYYY-MM-DD` for all-day (stored by Apple at UTC midnight,
+  floating). `occurred_at` = completion time, else due date, else creation time.
+- Scope: the whole source; no window. Needs Full Disk Access for whatever process
+  runs ingest (the Claude app already has it; a launchd job will need it too).
+
+**Apple Notes** — design when we get there. Same snapshot approach; bodies are
+protobuf-encoded.
 
 ---
 

@@ -26,6 +26,7 @@ SQLite extensions, which sqlite-vec needs.
 export OBSIDIAN_VAULT="$HOME/Library/Mobile Documents/iCloud~md~obsidian/Documents/Main"
 uv run python -m secondbrain ingest obsidian
 uv run python -m secondbrain ingest calendar
+uv run python -m secondbrain ingest reminders
 uv run python -m secondbrain auth google       # once; opens a browser
 uv run python -m secondbrain ingest health
 uv run python -m secondbrain search "what did I plant last spring" --since 2025-03-01

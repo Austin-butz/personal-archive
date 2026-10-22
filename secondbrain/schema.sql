@@ -45,21 +45,24 @@ CREATE TABLE calendar_events (
 );
 
 CREATE TABLE reminders (
-    id             INTEGER PRIMARY KEY,
-    source         TEXT NOT NULL,          -- 'apple_reminders'
-    external_id    TEXT,
-    list_name      TEXT,
-    title          TEXT NOT NULL,
-    notes          TEXT,
-    due_at         TEXT,
-    completed_at   TEXT,
-    priority       INTEGER,
-    content_hash   TEXT NOT NULL UNIQUE,
-    occurred_at    TEXT NOT NULL,          -- coalesce(due_at, completed_at, first_seen_at)
-    first_seen_at  TEXT NOT NULL,
-    last_seen_at   TEXT NOT NULL,
-    stale_at       TEXT,
-    chunked_at     TEXT
+    id                 INTEGER PRIMARY KEY,
+    source             TEXT NOT NULL,      -- 'apple_reminders'
+    external_id        TEXT,               -- CloudKit record id
+    list_name          TEXT,
+    title              TEXT NOT NULL,
+    notes              TEXT,
+    due_at             TEXT,               -- UTC ISO, or YYYY-MM-DD if all-day
+    completed_at       TEXT,
+    priority           INTEGER,            -- 0 none, 1 high, 5 medium, 9 low
+    created_at         TEXT,
+    parent_external_id TEXT,               -- set for subtasks
+    parent_title       TEXT,
+    content_hash       TEXT NOT NULL UNIQUE,
+    occurred_at        TEXT NOT NULL,      -- coalesce(completed_at, due_at, created_at)
+    first_seen_at      TEXT NOT NULL,
+    last_seen_at       TEXT NOT NULL,
+    stale_at           TEXT,
+    chunked_at         TEXT
 );
 
 CREATE TABLE health_metrics (
