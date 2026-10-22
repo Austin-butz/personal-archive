@@ -351,11 +351,16 @@ Then write counts to `ingest_runs`.
   seconds, per-minute steps) are out of scope.
 - Metrics and where they come from:
   - `dailyRollUp` (Google's per-day totals; days without data are omitted): steps,
-    distance, floors, active zone minutes, calories. Requests are capped at 90 days
-    (14 for calories). Rollups stop at *yesterday*, so only complete days are stored.
-  - `list` on daily-summary types: resting heart rate, HRV, SpO2, respiratory rate.
+    distance, floors, active zone minutes, calories, active calories, heart rate
+    (avg/min/max), active minutes by level, sedentary time, time in heart-rate zones.
+    Requests are capped at 90 days (14 for calories, heart rate and active minutes).
+    Rollups stop at *yesterday*, so only complete days are stored.
+  - `list` on daily-summary types: resting heart rate, HRV, SpO2, respiratory rate,
+    daily VO2 max, sleep skin temperature.
   - `list` on sessions/samples (through today): sleep (stages in `details`),
-    exercise (type, distance, calories, avg heart rate, steps in `details`), weight.
+    exercise (type, distance, calories, avg heart rate, steps in `details`), weight,
+    body fat.
+  - The full type list and what was left out and why: `docs/google-health-api-reader.md` §4.
 - **Each metric is its own ingest run** with scope `source + metric + start_at in
   window`, so the safety check is per metric. The sleep endpoint has been seen to
   return nothing intermittently; that must trip sleep's check rather than stale sleep.
@@ -416,7 +421,19 @@ Over-fetch and filter in Python. Good enough well past 100k chunks; revisit at ~
 
 ---
 
-## 8. Definition of done for v0
+## 8. Read-side tools (no writes)
+
+Two commands sit on top of the archive and never write to it. Their contract for
+an AI reader is `docs/DB.md`.
+
+- `recent --hours N`: rows whose `first_seen_at` or `stale_at` falls in the window
+  (new, changed, removed; the append-only model makes "changed" = new row + stale row),
+  plus calendar events and open reminders whose own date falls in the window or the
+  look-ahead. One line per row, prefixed `+`/`-`/` ` and `table#id`.
+- `sql "SELECT ..."`: one statement on a read-only connection fenced by an authorizer
+  (SELECT/READ/FUNCTION only), rows capped, long cells cut.
+
+## 9. Definition of done for v0
 
 - [ ] `DESIGN.md` (this file)
 - [x] Google Health OAuth client registered

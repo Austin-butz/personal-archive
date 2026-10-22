@@ -1,4 +1,4 @@
-"""CLI: python -m secondbrain {ingest,search,status}"""
+"""CLI: python -m secondbrain {ingest,search,status,recent,sql,auth}"""
 import argparse
 import logging
 import os
@@ -31,6 +31,16 @@ def main(argv=None):
 
     sub.add_parser("status")
 
+    rc = sub.add_parser("recent", help="what changed recently, formatted for an AI reader")
+    rc.add_argument("--hours", type=float, default=24)
+    rc.add_argument("--days", type=float, help="shorthand for --hours 24*N")
+    rc.add_argument("--ahead", type=float, default=24, help="hours of upcoming calendar/reminders")
+
+    sq = sub.add_parser("sql", help="run one read-only SELECT (for an AI or a quick look)")
+    sq.add_argument("query")
+    sq.add_argument("--limit", type=int, default=200)
+    sq.add_argument("--json", action="store_true")
+
     au = sub.add_parser("auth", help="one-time interactive sign-in")
     au.add_argument("provider", choices=["google"])
     a = p.parse_args(argv)
@@ -40,9 +50,20 @@ def main(argv=None):
         authorize()
         print(f"signed in; refresh token saved to {TOKEN_FILE}")
         return 0
+    if a.cmd == "sql":
+        from . import sqltool
+        try:
+            print(sqltool.run(a.db, a.query, a.limit, a.json))
+        except Exception as e:
+            print(f"error: {e}", file=sys.stderr)
+            return 1
+        return 0
     db = dbmod.connect(a.db)
 
-    if a.cmd == "ingest":
+    if a.cmd == "recent":
+        from . import recent
+        print(recent.report(db, hours=a.days * 24 if a.days else a.hours, ahead=a.ahead), end="")
+    elif a.cmd == "ingest":
         if a.source == "health":
             return _ingest_health(db, a.force)
         if a.source == "obsidian":

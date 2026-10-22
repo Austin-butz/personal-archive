@@ -1,8 +1,9 @@
 """Google Health API -> health_metrics (DESIGN.md §6).
 
 Daily granularity only: one row per day for daily totals and daily summaries, and one
-row per sleep session, exercise and weigh-in. Intraday samples (heart rate every few
-seconds, per-minute steps) are out of scope.
+row per sleep session, exercise, weigh-in and body-fat reading. Intraday samples (heart
+rate every few seconds, per-minute steps) are out of scope; Google's dailyRollUp gives
+the per-day aggregate (e.g. heart rate avg/min/max) instead.
 
 Each metric is ingested as its own run with its own scope, so the safety check is per
 metric: the sleep endpoint occasionally returns nothing, and that must not stale the
@@ -166,6 +167,80 @@ def _weight(p):
             None, p["name"], {"notes": w["notes"]} if w.get("notes") else None)
 
 
+def _duration_s(x) -> float:
+    """Protobuf Duration string ("3600s") -> seconds."""
+    return _num(str(x).rstrip("s")) if x not in (None, "") else 0.0
+
+
+def _heart_rate(p):
+    v = p.get("heartRate")
+    if not v or v.get("beatsPerMinuteAvg") is None:
+        return None
+    details = {"min_bpm": int(_num(v.get("beatsPerMinuteMin"))),
+               "max_bpm": int(_num(v.get("beatsPerMinuteMax")))}
+    return (float(round(_num(v["beatsPerMinuteAvg"]))), "bpm", _ymd(p["civilStartTime"]["date"]),
+            None, None, details)
+
+
+def _active_minutes(p):
+    v = p.get("activeMinutes")
+    levels = {e["activityLevel"].lower(): int(_num(e.get("activeMinutesSum")))
+              for e in (v or {}).get("activeMinutesRollupByActivityLevel", [])
+              if e.get("activityLevel")}
+    if not levels:
+        return None
+    return float(sum(levels.values())), "min", _ymd(p["civilStartTime"]["date"]), None, None, levels
+
+
+def _sedentary(p):
+    v = p.get("sedentaryPeriod")
+    if not v or v.get("durationSum") is None:
+        return None
+    return (float(round(_duration_s(v["durationSum"]) / 60)), "min",
+            _ymd(p["civilStartTime"]["date"]), None, None, None)
+
+
+def _hr_zones(p):
+    v = p.get("timeInHeartRateZone")
+    zones = {z["heartRateZone"].lower(): int(round(_duration_s(z.get("duration")) / 60))
+             for z in (v or {}).get("timeInHeartRateZones", []) if z.get("heartRateZone")}
+    if not zones:
+        return None
+    # The value is minutes at moderate intensity or above; "light" stays in details.
+    value = float(sum(m for k, m in zones.items() if k != "light"))
+    return value, "min", _ymd(p["civilStartTime"]["date"]), None, None, zones
+
+
+def _vo2max(p):
+    v = p.get("dailyVo2Max")
+    if not v or v.get("vo2Max") is None:
+        return None
+    details = {}
+    if v.get("cardioFitnessLevel"):
+        details["fitness_level"] = v["cardioFitnessLevel"].lower().replace("_", " ")
+    if "estimated" in v:
+        details["estimated"] = bool(v["estimated"])
+    return round(_num(v["vo2Max"]), 1), "ml/kg/min", _ymd(v["date"]), None, None, details or None
+
+
+def _sleep_temperature(p):
+    v = p.get("dailySleepTemperatureDerivations")
+    if not v or v.get("nightlyTemperatureCelsius") is None:
+        return None
+    nightly = round(_num(v["nightlyTemperatureCelsius"]), 2)
+    details = None
+    if v.get("baselineTemperatureCelsius") is not None:
+        base = round(_num(v["baselineTemperatureCelsius"]), 2)
+        details = {"baseline_c": base, "vs_baseline_c": round(nightly - base, 2)}
+    return nightly, "°C", _ymd(v["date"]), None, None, details
+
+
+def _body_fat(p):
+    b = p["bodyFat"]
+    return (round(_num(b["percentage"]), 1), "%", _utc(b["sampleTime"]["physicalTime"]),
+            None, p["name"], None)
+
+
 METRICS = [
     Metric("steps", "Steps", "steps", "rollup", _rollup("steps", "countSum", unit="steps")),
     Metric("distance", "Distance", "distance", "rollup",
@@ -194,6 +269,20 @@ METRICS = [
            filter_field="exercise.interval.civil_start_time", page_size=25),
     Metric("weight", "Weight", "weight", "sample", _weight,
            filter_field="weight.sample_time.civil_time"),
+    # Added after reading the v4 data-types reference (docs/google-health-api-reader.md §4).
+    Metric("heart_rate", "Heart rate", "heart-rate", "rollup", _heart_rate, max_days=14),
+    Metric("active_minutes", "Active minutes", "active-minutes", "rollup", _active_minutes,
+           max_days=14),
+    Metric("active_calories", "Active calories", "active-energy-burned", "rollup",
+           _rollup("activeEnergyBurned", "kcalSum", unit="kcal")),
+    Metric("sedentary", "Sedentary time", "sedentary-period", "rollup", _sedentary),
+    Metric("hr_zones", "Time in heart rate zones", "time-in-heart-rate-zone", "rollup", _hr_zones),
+    Metric("vo2max", "Cardio fitness (VO2 max)", "daily-vo2-max", "daily", _vo2max,
+           filter_field="daily_vo2_max.date"),
+    Metric("sleep_temperature", "Sleep skin temperature", "daily-sleep-temperature-derivations",
+           "daily", _sleep_temperature, filter_field="daily_sleep_temperature_derivations.date"),
+    Metric("body_fat", "Body fat", "body-fat", "sample", _body_fat,
+           filter_field="body_fat.sample_time.civil_time"),
 ]
 
 
@@ -291,6 +380,19 @@ def _render(m: Metric, row) -> str:
     when = (f"{date.fromisoformat(row['start_at']):%a %Y-%m-%d}" if len(row["start_at"]) == 10
             else f"{_local(row['start_at']):%a %Y-%m-%d %H:%M}")
     text = f"Health: {m.label}, {when}\n{m.label}: {_num_str(row['value'])} {row['unit']}"
-    if m.name == "active_zone_minutes" and d:
-        text += f" (fat burn {d['fat_burn']}, cardio {d['cardio']}, peak {d['peak']})"
-    return text
+    suffix = _DETAIL_SUFFIX.get(m.name)
+    return text + (suffix(d) if suffix and d else "")
+
+
+def _kv(d: dict) -> str:
+    return ", ".join(f"{k.replace('_', ' ')} {v}" for k, v in d.items())
+
+
+_DETAIL_SUFFIX = {
+    "active_zone_minutes": lambda d: f" (fat burn {d['fat_burn']}, cardio {d['cardio']}, peak {d['peak']})",
+    "heart_rate": lambda d: f" average (min {d['min_bpm']}, max {d['max_bpm']})",
+    "active_minutes": lambda d: f" ({_kv(d)})",
+    "hr_zones": lambda d: f" at moderate or above ({_kv(d)})",
+    "vo2max": lambda d: f" ({d['fitness_level']})" if d.get("fitness_level") else "",
+    "sleep_temperature": lambda d: f" ({d['vs_baseline_c']:+.2f} vs baseline {d['baseline_c']})",
+}

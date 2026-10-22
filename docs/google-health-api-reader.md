@@ -59,7 +59,8 @@ with "re-run `auth google`".
 
 Base: `https://health.googleapis.com/v4/users/me/dataTypes/{dataType}/dataPoints`
 
-**a) Daily roll-ups** (steps, distance, floors, active-zone-minutes, total-calories):
+**a) Daily roll-ups** (steps, distance, floors, active-zone-minutes, total-calories,
+heart-rate, active-minutes, active-energy-burned, sedentary-period, time-in-heart-rate-zone):
 
 ```
 POST {base}/{dataType}/dataPoints:dailyRollUp
@@ -69,12 +70,25 @@ POST {base}/{dataType}/dataPoints:dailyRollUp
 → {"rollupDataPoints": [...], "nextPageToken": "..."}
 ```
 - Range is civil dates, end exclusive. Cap each request at **90 days** (**14 for
-  `total-calories`**); loop over windows. Days with no data are omitted.
+  `total-calories`, `heart-rate`, `active-minutes` and `calories-in-heart-rate-zone`**,
+  per the dailyRollUp reference); loop over windows. Days with no data are omitted.
 - Stop at yesterday so only complete days are stored.
-- Values: `p["steps"]["countSum"]`, `p["distance"]["millimetersSum"]`,
-  `p["floors"]["countSum"]`, `p["totalCalories"]["kcalSum"]`,
-  `p["activeZoneMinutes"]["sumIn{FatBurn,Cardio,Peak}HeartZone"]`; day from
-  `p["civilStartTime"]["date"]`.
+- Values, by data type (day from `p["civilStartTime"]["date"]`):
+
+  | dataType | rollup field | value fields |
+  |---|---|---|
+  | `steps` | `steps` | `countSum` |
+  | `distance` | `distance` | `millimetersSum` |
+  | `floors` | `floors` | `countSum` |
+  | `total-calories` | `totalCalories` | `kcalSum` |
+  | `active-energy-burned` | `activeEnergyBurned` | `kcalSum` |
+  | `active-zone-minutes` | `activeZoneMinutes` | `sumInFatBurnHeartZone`, `sumInCardioHeartZone`, `sumInPeakHeartZone` |
+  | `heart-rate` | `heartRate` | `beatsPerMinuteAvg`, `beatsPerMinuteMin`, `beatsPerMinuteMax` |
+  | `active-minutes` | `activeMinutes` | `activeMinutesRollupByActivityLevel[]` of `{activityLevel, activeMinutesSum}` |
+  | `sedentary-period` | `sedentaryPeriod` | `durationSum` (Duration string, e.g. `"27000s"`) |
+  | `time-in-heart-rate-zone` | `timeInHeartRateZone` | `timeInHeartRateZones[]` of `{heartRateZone: LIGHT/MODERATE/VIGOROUS/PEAK, duration}` |
+  | `altitude` | `altitude` | `gainMillimetersSum` (not ingested; floors covers it) |
+  | `body-fat`, `weight`, `run-vo2-max`, `core-body-temperature`, `blood-glucose` | same name | `*Avg`/`*Min`/`*Max` style aggregates (we list these instead) |
 
 **b) List** (daily summaries, sessions, samples):
 
@@ -92,6 +106,23 @@ GET {base}/{dataType}/dataPoints?pageSize=N&filter=<field> >= "2026-01-01" AND <
 | `sleep` (pageSize 25) | `sleep.interval.civil_end_time` | `sleep.summary.minutesAsleep`, `stagesSummary`, `interval` |
 | `exercise` (pageSize 25) | `exercise.interval.civil_start_time` | `exercise.activeDuration`, `metricsSummary`, `interval` |
 | `weight` | `weight.sample_time.civil_time` | `weight.weightGrams`, `sampleTime.physicalTime` |
+| `body-fat` | `body_fat.sample_time.civil_time` | `bodyFat.percentage`, `sampleTime.physicalTime` |
+| `daily-vo2-max` | `daily_vo2_max.date` | `dailyVo2Max.vo2Max`, `cardioFitnessLevel`, `estimated` |
+| `daily-sleep-temperature-derivations` | `daily_sleep_temperature_derivations.date` | `nightlyTemperatureCelsius`, `baselineTemperatureCelsius` |
+
+Filter rules (from the Filters guide): only `>=` and `<`, joined by `AND`; civil times are
+`YYYY-MM-DD[THH:mm:ss]`, physical times RFC 3339 with `Z`; the filter field prefix is the
+snake_case data type (`body_fat`), while the URL path uses kebab-case (`body-fat`).
+
+**Not ingested, and why.** `heart-rate-variability`, `oxygen-saturation`, `activity-level`
+are intraday samples (the daily-* types cover them). `respiratory-rate-sleep-summary` and
+`daily-heart-rate-zones` duplicate `daily-respiratory-rate` / `time-in-heart-rate-zone`.
+`nutrition-log`, `hydration-log`, `food` need the `nutrition.readonly` scope (adding it
+means re-running `auth google`). `electrocardiogram` and `irregular-rhythm-notification`
+need their own scopes. `height`, `blood-glucose`, `core-body-temperature`, `swim-lengths-data`
+need devices this account doesn't have. (`daily-vo2-max` and `body-fat` are ingested but
+returned nothing on the first run; they cost one empty request each.)
+Reference: <https://developers.google.com/health/data-types>.
 
 Page with `nextPageToken` until absent. Numbers often arrive as strings; coerce them.
 Use `p["name"]` as the stable ID for sleep/exercise/weight points.

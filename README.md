@@ -31,7 +31,10 @@ uv run python -m secondbrain auth google       # once; opens a browser
 uv run python -m secondbrain ingest health
 uv run python -m secondbrain search "what did I plant last spring" --since 2025-03-01
 uv run python -m secondbrain status
+uv run python -m secondbrain recent --hours 24      # what changed, for an AI reader
+uv run python -m secondbrain sql "SELECT metric, count(*) FROM health_metrics GROUP BY 1"
 ```
+
 
 Ingest exits with code 2 if the safety check trips (a source looks unexpectedly empty).
 If the drop is real, re-run with `--force`.
