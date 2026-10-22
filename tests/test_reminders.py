@@ -169,3 +169,13 @@ def test_search_by_due_week(env):
     run(db, src, emb)
     hits = search(db, emb, "plumber", limit=5, since="2026-09-22", until="2026-09-23")
     assert [h["text"].split("\n")[0] for h in hits] == ["Reminder: Call plumber (open)"]
+
+
+def test_unreadable_store_folder_names_full_disk_access(env, tmp_path):
+    store, db, src, emb = env
+    src.stores.chmod(0)
+    try:
+        with pytest.raises(PermissionError, match="Full Disk Access"):
+            run(db, src, emb)
+    finally:
+        src.stores.chmod(0o755)

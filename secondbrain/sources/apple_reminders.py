@@ -57,6 +57,15 @@ class AppleReminders:
         self.stores = Path(stores)
 
     def fetch(self):
+        # glob() swallows "Operation not permitted", which is how macOS privacy controls
+        # refuse a process without Full Disk Access; list the folder first to surface it.
+        try:
+            os.listdir(self.stores)
+        except PermissionError as e:
+            raise PermissionError(
+                f"can't list {self.stores} ({e}). The process running ingest needs Full Disk "
+                "Access: System Settings > Privacy & Security > Full Disk Access. Under "
+                "launchd, grant it to /bin/bash.") from e
         files = sorted(self.stores.glob("Data-*.sqlite"))
         if not files:
             raise FileNotFoundError(f"no Reminders stores in {self.stores}")
