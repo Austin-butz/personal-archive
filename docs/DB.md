@@ -161,6 +161,25 @@ SELECT DISTINCT substr(occurred_at, 1, 10) AS day, list_name, title FROM reminde
 WHERE parent_external_id IS NULL AND title LIKE 'Chest press%' ORDER BY day;
 ```
 
+
+### workouts  (view over reminders)
+
+Every reminder whose list name contains "workout", latest version of each item, deleted
+lists included (`deleted = 1`). Irregular reminders (notes like "had to stop early") are
+rows with NULL `exercise`. Exercise items are titled `<name> - <reps> @ <n>lb`; their
+"Set N" subtasks (`is_subtask = 1`) get the same parse from `parent_title`.
+
+| column | meaning |
+|---|---|
+| `exercise`, `target_reps`, `target_weight_lb` | parsed from the item title; NULL if it doesn't fit |
+| `notes` | raw note text from the reminder (mid-session "130lb", "only 9 reps"); not parsed |
+| `completed_at`, `list_day`, `list_name`, `title`, `parent_title`, `reminder_id` | as in reminders |
+
+```sql
+SELECT list_day, exercise, title, target_weight_lb, notes FROM workouts
+WHERE is_subtask = 1 AND completed_at IS NOT NULL ORDER BY completed_at DESC LIMIT 20;
+```
+
 ### calendar_events  (source = 'macos_calendar')
 
 One row per *occurrence* of an event (repeating series are expanded).
