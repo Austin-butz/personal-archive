@@ -222,3 +222,23 @@ __marimo__/
 *.db-wal
 *.db-shm
 .DS_Store
+
+# ---------- Secrets and machine-local files (never commit) ----------
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+key.properties
+credentials*.json
+client_secret*.json
+token.json
+google_token.json
+service-account*.json
+.claude/settings.local.json
+.claude/worktrees/
