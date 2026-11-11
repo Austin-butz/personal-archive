@@ -1,7 +1,6 @@
-# secondbrain
+# personal-archive
 
-Personal archive + semantic search on SQLite. Design: [DESIGN.md](DESIGN.md).
-Parked ideas: [IDEAS.md](IDEAS.md).
+A simpler take on my previous personal knowledge base projects. Removes all the complex graph walking and entity extraction in favor of a single vector DB, with more focus on consistent code, contracts for the source fetchers, and usability. Fetches from Obsidian notes, Apple Calendar, Apple Reminders and Google Health. AI agents get a read-only `sql` command which is significantly more effective than my previous projects' algorithms. At single-user scale semantic search already finds the right chunk, so this one keeps what matters for an archive: append-never-overwrite, content-hash identity, stale-don't-delete, and a safety check that refuses to mark rows stale when a source comes back suspiciously empty. See DESIGN.md for the stop-sign list and IDEAS.md for pending ideas.
 
 ## Setup (Mac mini)
 
